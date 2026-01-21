@@ -1,0 +1,30 @@
+name: Arduino Build Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install ESP32 board
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install required libraries
+        run: |
+          arduino-cli lib install "MPU6050"
+          arduino-cli lib install "ArduinoJson"
+
+      - name: Compile Smart Helmet
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32 Smart-Helmet_Final.ino
