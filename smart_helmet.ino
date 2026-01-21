@@ -1,137 +1,191 @@
 /*
-  Smart Helmet - Final ESP32 Firmware (BLE Version)
+  Smart Helmet - Version 1 (LEGACY - ESP32 Only)
 
   Features:
-  - Accident detection using MPU6050
-  - Helmet worn detection (IR)
-  - Drowsiness detection (IR)
-  - Alcohol detection (MQ-3)
-  - Head gesture detection (gyro)
-  - BLE communication with Android app (future-ready)
-  - Local buzzer alert
+  - Alcohol detection using MQ-3 sensor
+  - Helmet worn detection using IR sensor
+  - Drowsiness detection using IR sensor
+  - Accident detection using MPU6050 (accelerometer + gyroscope)
+  - Sends SMS alerts via Circuit Digest Cloud API
+  - Prints all sensor status on Serial Monitor
+  - Buzzer & LED alerts for local notification
 
   NOTE:
-  This sends sensor data to an Android app via BLE.
-  The Android app handles calls, GPS, voice assistant, and emergency actions.
+  This version uses Wi-Fi + SMS alerts.
+  It has been superseded by the BLE-based version (V2)
+  for Android app integration.
 */
 
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include <Wire.h>
 #include <MPU6050.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
-#include <ArduinoJson.h>
 #include <math.h>
 
-#define ALCOHOL_PIN 34
-#define HELMET_PIN 25
-#define SLEEP_PIN  26
-#define BUZZER_PIN 18
+// --- PIN DEFINITIONS ---
+const int alcoholSensorPin = 34; // MQ-3 analog pin
+const int wearSensorPin = 25;    // IR sensor for helmet detection
+const int sleepSensorPin = 26;   // IR sensor for drowsiness detection
+const int buzzerPin = 18;
+const int ledPin = 19;
 
-MPU6050 mpu;
-int16_t ax, ay, az, gx, gy, gz;
+// --- Wi-Fi credentials ---
+const char* ssid = "WIFI_SSID";
+const char* password = "WIFI_PASSWORD";
 
-#define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
-#define CHARACTERISTIC_UUID "abcd1234-5678-1234-5678-abcdef123456"
+// --- SMS API credentials ---
+const char* apiKey = "YOUR_API_KEY";
+const char* templateID = "115";
+const char* mobileNumber = "91XXXXXXXXXX";
+const char* var1 = "RIDER";
 
-BLECharacteristic *helmetCharacteristic;
+// --- Drowsiness detection variables ---
+const int drowsinessThreshold = 5;
+const unsigned long drowsinessTimeWindow = 10000;
+const unsigned long resetTime = 5000;
+unsigned long sleepTimestamps[drowsinessThreshold];
+int sleepIndex = 0;
+bool isDrowsy = false;
+unsigned long lastSleepDetectionTime = 0;
 
-#define ALCOHOL_THRESHOLD   1000
-#define ACCIDENT_THRESHOLD  2.8
-#define GESTURE_THRESHOLD   180
-
-//status flags
+// --- Alcohol detection ---
 bool alcoholDetected = false;
-bool drowsy = false;
+
+// --- Helmet wear status ---
+int wearStatus = 0;
+
+// --- MPU6050 setup ---
+MPU6050 mpu;
+int16_t accX_raw, accY_raw, accZ_raw;
+int16_t gyroX_raw, gyroY_raw, gyroZ_raw;
+float accX, accY, accZ;
+float gyroX, gyroY, gyroZ;
+const float accidentThreshold = 2.5;
 bool accidentDetected = false;
 
-//setup
 void setup() {
   Serial.begin(115200);
 
-  pinMode(HELMET_PIN, INPUT);
-  pinMode(SLEEP_PIN, INPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  pinMode(wearSensorPin, INPUT);
+  pinMode(sleepSensorPin, INPUT);
+  pinMode(buzzerPin, OUTPUT);
+  pinMode(ledPin, OUTPUT);
 
-  // MPU6050 init
+  digitalWrite(buzzerPin, LOW);
+  digitalWrite(ledPin, LOW);
+
+  Serial.println("\nConnecting to Wi-Fi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWi-Fi connected");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
   Wire.begin();
   mpu.initialize();
 
   if (mpu.testConnection()) {
-    Serial.println("MPU6050 connected");
+    Serial.println("MPU6050 connected successfully");
   } else {
     Serial.println("MPU6050 connection failed");
   }
 
-  // BLE init
-  BLEDevice::init("SmartHelmet");
-  BLEServer *server = BLEDevice::createServer();
-  BLEService *service = server->createService(SERVICE_UUID);
-
-  helmetCharacteristic = service->createCharacteristic(
-                           CHARACTERISTIC_UUID,
-                           BLECharacteristic::PROPERTY_NOTIFY
-                         );
-  helmetCharacteristic->addDescriptor(new BLE2902());
-
-  service->start();
-  BLEDevice::getAdvertising()->start();
-
-  Serial.println("Smart Helmet BLE Ready");
+  Serial.println("Smart Helmet V1 Initialized");
 }
 
-//head gesture
-String detectGesture() {
-  if (gy > GESTURE_THRESHOLD) return "RIGHT";   // Pick call
-  if (gy < -GESTURE_THRESHOLD) return "LEFT";   // Reject call
-  if (gx > GESTURE_THRESHOLD) return "NOD";     // Voice assistant
-  return "NONE";
+// --- Function to send SMS ---
+void sendSMS(const char* messageVar) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+
+    String apiUrl = "http://www.circuitdigest.cloud/send_sms?ID=" + String(templateID);
+    String payload = "{\"mobiles\":\"" + String(mobileNumber) +
+                     "\",\"var1\":\"" + String(var1) +
+                     "\",\"var2\":\"" + String(messageVar) + "\"}";
+
+    http.begin(apiUrl);
+    http.addHeader("Authorization", String(apiKey));
+    http.addHeader("Content-Type", "application/json");
+
+    int httpResponseCode = http.POST(payload);
+
+    if (httpResponseCode == 200) {
+      Serial.println("SMS sent successfully");
+    } else {
+      Serial.print("SMS failed, HTTP code: ");
+      Serial.println(httpResponseCode);
+    }
+
+    http.end();
+  } else {
+    Serial.println("Wi-Fi not connected");
+  }
 }
 
 void loop() {
+  unsigned long currentMillis = millis();
 
-  // Read sensors
-  alcoholDetected = analogRead(ALCOHOL_PIN) > ALCOHOL_THRESHOLD;
-  helmetWorn = !digitalRead(HELMET_PIN);
-  drowsy = !digitalRead(SLEEP_PIN);
+  int alcoholValue = analogRead(alcoholSensorPin);
+  wearStatus = !digitalRead(wearSensorPin);
+  int sleepSignal = !digitalRead(sleepSensorPin);
 
-  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  alcoholDetected = (alcoholValue > 1000);
 
-  float axg = ax / 16384.0;
-  float ayg = ay / 16384.0;
-  float azg = az / 16384.0;
+  if (sleepSignal) {
+    lastSleepDetectionTime = currentMillis;
+    sleepTimestamps[sleepIndex] = currentMillis;
+    sleepIndex = (sleepIndex + 1) % drowsinessThreshold;
 
-  float totalAccel = sqrt(axg * axg + ayg * ayg + azg * azg);
-  accidentDetected = totalAccel > ACCIDENT_THRESHOLD;
-
-  // Buzzer alert
-  if (drowsy || accidentDetected) {
-    digitalWrite(BUZZER_PIN, HIGH);
-  } else {
-    digitalWrite(BUZZER_PIN, LOW);
+    int count = 0;
+    for (int i = 0; i < drowsinessThreshold; i++) {
+      if (currentMillis - sleepTimestamps[i] <= drowsinessTimeWindow) {
+        count++;
+      }
+    }
+    isDrowsy = (count >= drowsinessThreshold);
   }
 
-  //JSON packet
-  StaticJsonDocument<256> doc;
-  doc["helmet"] = helmetWorn;
-  doc["alcohol"] = alcoholDetected;
-  doc["drowsy"] = drowsy;
-  doc["accident"] = accidentDetected;
-  doc["gesture"] = detectGesture();
-  doc["ax"] = axg;
-  doc["ay"] = ayg;
-  doc["az"] = azg;
+  if (currentMillis - lastSleepDetectionTime > resetTime) {
+    isDrowsy = false;
+  }
 
-  char payload[256];
-  serializeJson(doc, payload);
+  mpu.getAcceleration(&accX_raw, &accY_raw, &accZ_raw);
+  mpu.getRotation(&gyroX_raw, &gyroY_raw, &gyroZ_raw);
 
-  // Send via BLE
-  helmetCharacteristic->setValue(payload);
-  helmetCharacteristic->notify();
+  accX = accX_raw / 16384.0;
+  accY = accY_raw / 16384.0;
+  accZ = accZ_raw / 16384.0;
 
-  Serial.println(payload);
+  gyroX = gyroX_raw / 131.0;
+  gyroY = gyroY_raw / 131.0;
+  gyroZ = gyroZ_raw / 131.0;
 
-  delay(400);
+  float totalAccel = sqrt(accX * accX + accY * accY + accZ * accZ);
+  accidentDetected = (totalAccel > accidentThreshold);
+
+  if (isDrowsy || alcoholDetected || accidentDetected) {
+    digitalWrite(buzzerPin, HIGH);
+    digitalWrite(ledPin, HIGH);
+
+    if (accidentDetected) sendSMS("Accident Detected!");
+    else if (alcoholDetected) sendSMS("Alcohol Detected!");
+    else if (isDrowsy) sendSMS("Drowsiness Detected!");
+
+    delay(1000);
+  } else {
+    digitalWrite(buzzerPin, LOW);
+    digitalWrite(ledPin, LOW);
+  }
+
+  Serial.print("Helmet: "); Serial.print(wearStatus ? "Worn" : "Not Worn");
+  Serial.print(" | Alcohol: "); Serial.print(alcoholDetected ? "Detected" : "Clear");
+  Serial.print(" | Drowsy: "); Serial.print(isDrowsy ? "Yes" : "No");
+  Serial.print(" | Accident: "); Serial.println(accidentDetected ? "Yes" : "No");
+
+  delay(500);
 }
