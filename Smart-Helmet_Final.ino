@@ -8,7 +8,7 @@
   - Alcohol detection (MQ-3)
   - Head gesture detection (gyro)
   - BLE communication with Android app (future-ready)
-  - Local buzzer alert
+  - Local buzzer alert 
 
   NOTE:
   This firmware sends sensor data to an Android app via BLE.
@@ -24,34 +24,33 @@
 #include <ArduinoJson.h>
 #include <math.h>
 
-// ---------------- PIN DEFINITIONS ----------------
 #define ALCOHOL_PIN 34
 #define HELMET_PIN 25
 #define SLEEP_PIN  26
 #define BUZZER_PIN 18
 
-// ---------------- MPU6050 ----------------
+// mpu6050
 MPU6050 mpu;
 int16_t ax, ay, az, gx, gy, gz;
 
-// ---------------- BLE ----------------
+//BLE
 #define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
 #define CHARACTERISTIC_UUID "abcd1234-5678-1234-5678-abcdef123456"
 
 BLECharacteristic *helmetCharacteristic;
 
-// ---------------- THRESHOLDS ----------------
+//thresholds
 #define ALCOHOL_THRESHOLD   1000
 #define ACCIDENT_THRESHOLD  2.8
 #define GESTURE_THRESHOLD   180
 
-// ---------------- STATUS FLAGS ----------------
+
 bool helmetWorn = false;
 bool alcoholDetected = false;
 bool drowsy = false;
 bool accidentDetected = false;
 
-// ---------------- SETUP ----------------
+//setup
 void setup() {
   Serial.begin(115200);
 
@@ -87,7 +86,7 @@ void setup() {
   Serial.println("Smart Helmet BLE Ready");
 }
 
-// ---------------- HEAD GESTURE ----------------
+// HEAD GESTURE
 String detectGesture() {
   if (gy > GESTURE_THRESHOLD) return "RIGHT";   // Pick call
   if (gy < -GESTURE_THRESHOLD) return "LEFT";   // Reject call
@@ -95,7 +94,7 @@ String detectGesture() {
   return "NONE";
 }
 
-// ---------------- LOOP ----------------
+
 void loop() {
 
   // Read sensors
