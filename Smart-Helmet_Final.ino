@@ -111,7 +111,10 @@ void loop() {
   float azg = az / 16384.0;
 
   float totalAccel = sqrt(axg * axg + ayg * ayg + azg * azg);
-  accidentDetected = totalAccel > ACCIDENT_THRESHOLD;
+  float impact = totalAccel;
+  float rotation = abs(gx) + abs(gy) + abs(gz);
+
+accidentDetected = (impact > ACCIDENT_THRESHOLD && rotation > 400);
 
   // Buzzer alert
   if (drowsy || accidentDetected) {
