@@ -144,5 +144,6 @@ accidentDetected = (impact > ACCIDENT_THRESHOLD && rotation > 400);
   // Debug output
   Serial.println(payload);
 
-  delay(400);
+  delay(300);   // faster sensor update
+
 }
